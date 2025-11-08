@@ -4,72 +4,136 @@ import {
   deriveKey,
   encryptMessage,
   decryptMessage,
+  generateRandomKey,
 } from "../utils/cryptoUtils.js";
-// RSA utilities not needed in current implementation (using shared AES key)
+import {
+  importPrivateKey,
+  importPublicKey,
+  encryptAESKeyWithPublicKey,
+  decryptAESKeyWithPrivateKey,
+} from "../utils/rsaUtils.js";
 import TypingIndicator from "./TypingIndicator";
 import MessageBubble from "./MessageBubble";
-import { SendHorizonal, Smile } from "lucide-react";
+import { SendHorizonal, Smile, Hash, MessageCircle } from "lucide-react";
 import EmojiPicker from "emoji-picker-react";
+import axios from "axios";
 
-export default function ChatRoom({ username, passphrase }) {
+export default function ChatRoom({ username, currentChat, onChatChange }) {
   const [messages, setMessages] = useState([]);
   const [message, setMessage] = useState("");
-  const [aesKey, setAesKey] = useState(null);
+  const [roomAesKey, setRoomAesKey] = useState(null);
+  const [privateKey, setPrivateKey] = useState(null);
+  const [dmSessions, setDmSessions] = useState({});
   const [typingUsers, setTypingUsers] = useState([]);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const chatEndRef = useRef();
+  const privateKeyRef = useRef(null);
 
-  // --- Load RSA private key and derive AES key ---
+  // Initialize encryption keys
   useEffect(() => {
+    let isMounted = true;
+
     (async () => {
       try {
-        // 1️⃣ Derive AES key from passphrase
-        const fixedSalt = "fixed_salt_for_demo"; // Replace with secure salt in production
-        const derived = await deriveKey(passphrase, fixedSalt);
-        setAesKey(derived);
-        console.log("✅ AES key derived successfully");
+        const privateKeyBase64 = localStorage.getItem("privateKey");
+        if (privateKeyBase64) {
+          const privKey = await importPrivateKey(privateKeyBase64);
+          if (!isMounted) return;
+          setPrivateKey(privKey);
+          privateKeyRef.current = privKey;
+          console.log("✅ RSA private key loaded");
+        }
 
-        // 2️⃣ Socket join
+        const passphrase = "shared-room-secret";
+        const fixedSalt = "fixed_salt_for_demo";
+        const derived = await deriveKey(passphrase, fixedSalt);
+        if (!isMounted) return;
+        setRoomAesKey(derived);
+        console.log("✅ Room AES key derived");
+
         socketClient.join(username);
 
-        // 3️⃣ Listen for messages
-        socketClient.onMessage(async (data) => {
+        const handleRoomMessage = async (data) => {
+          if (!isMounted) return;
           if (data.sender === username) return;
 
           try {
             const text = await decryptMessage(data, derived);
-            setMessages((prev) => {
-              if (prev.length > 0) {
-                const last = prev[prev.length - 1];
-                if (last.sender === data.sender && last.text === text) return prev;
-              }
-              return [...prev, { sender: data.sender, text }];
-            });
+            setMessages((prev) => [
+              ...prev,
+              { sender: data.sender, text, type: "room", timestamp: Date.now() },
+            ]);
           } catch (err) {
-            console.error("Decryption failed:", err);
+            console.error("Room decryption failed:", err);
           }
-        });
+        };
 
-        // 4️⃣ Listen for typing events
-        socketClient.onTyping((user) =>
-          setTypingUsers((prev) => [...new Set([...prev, user])])
-        );
-        socketClient.onStopTyping((user) =>
-          setTypingUsers((prev) => prev.filter((u) => u !== user))
-        );
+        const handleDirectMessage = async (data) => {
+          if (!isMounted) return;
+          const currentPrivateKey = privateKeyRef.current;
+
+          if (!currentPrivateKey) {
+            console.error("Private key not loaded yet");
+            return;
+          }
+
+          try {
+            const { sender, encryptedAESKey, encryptedMessage } = data;
+
+            const sessionKey = await decryptAESKeyWithPrivateKey(
+              new Uint8Array(encryptedAESKey),
+              currentPrivateKey
+            );
+
+            setDmSessions((prev) => ({ ...prev, [sender]: sessionKey }));
+
+            const text = await decryptMessage(encryptedMessage, sessionKey);
+
+            setMessages((prev) => [
+              ...prev,
+              { sender, text, type: "dm", timestamp: Date.now() },
+            ]);
+          } catch (err) {
+            console.error("DM decryption failed:", err);
+          }
+        };
+
+        const handleTyping = (user) => {
+          if (!isMounted) return;
+          setTypingUsers((prev) => [...new Set([...prev, user])]);
+        };
+
+        const handleStopTyping = (user) => {
+          if (!isMounted) return;
+          setTypingUsers((prev) => prev.filter((u) => u !== user));
+        };
+
+        socketClient.onMessage(handleRoomMessage);
+        socketClient.onDirectMessage(handleDirectMessage);
+        socketClient.onTyping(handleTyping);
+        socketClient.onStopTyping(handleStopTyping);
       } catch (err) {
-        console.error("❌ Error in ChatRoom initialization:", err);
-        alert("Failed to initialize chat. Please try logging in again.");
+        console.error("❌ Initialization error:", err);
+        alert("Failed to initialize chat");
       }
     })();
-  }, [passphrase, username]);
 
-  // --- Send message with AES encryption ---
-  const sendMessage = async () => {
-    if (!message.trim() || !aesKey) return;
+    return () => {
+      isMounted = false;
+      socketClient.removeAllListeners();
+      console.log("🧹 Cleaned up all socket listeners");
+    };
+  }, [username]);
+
+  useEffect(() => {
+    privateKeyRef.current = privateKey;
+  }, [privateKey]);
+
+  const sendRoomMessage = async () => {
+    if (!message.trim() || !roomAesKey) return;
 
     try {
-      const enc = await encryptMessage(message, aesKey);
+      const enc = await encryptMessage(message, roomAesKey);
       socketClient.sendMessage({
         room: "general",
         sender: username,
@@ -77,18 +141,93 @@ export default function ChatRoom({ username, passphrase }) {
         iv: enc.iv,
       });
 
-      setMessages((prev) => [...prev, { sender: "You", text: message }]);
+      setMessages((prev) => [
+        ...prev,
+        { sender: "You", text: message, type: "room", timestamp: Date.now() },
+      ]);
       setMessage("");
     } catch (err) {
-      console.error("Error sending message:", err);
-      alert("Failed to send message");
+      console.error("Error sending room message:", err);
     }
   };
 
-  // --- Auto scroll to bottom ---
+  const sendDirectMessage = async (recipientUsername) => {
+    if (!message.trim() || !privateKey) {
+      if (!privateKey) {
+        alert("⚠️ Private key not loaded. Please refresh and try again.");
+      }
+      return;
+    }
+
+    try {
+      let sessionKey = dmSessions[recipientUsername];
+
+      if (!sessionKey) {
+        sessionKey = await generateRandomKey();
+        setDmSessions((prev) => ({ ...prev, [recipientUsername]: sessionKey }));
+      }
+
+      const res = await axios.get(
+        `http://localhost:5000/api/public-key/${recipientUsername}`,
+        {
+          headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        }
+      );
+      const recipientPublicKey = await importPublicKey(res.data.publicKey);
+
+      const encryptedAESKey = await encryptAESKeyWithPublicKey(
+        sessionKey,
+        recipientPublicKey
+      );
+
+      const encryptedMessage = await encryptMessage(message, sessionKey);
+
+      socketClient.sendDirectMessage({
+        recipient: recipientUsername,
+        sender: username,
+        encryptedAESKey: Array.from(encryptedAESKey),
+        encryptedMessage,
+      });
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          sender: "You",
+          text: message,
+          type: "dm",
+          target: recipientUsername,
+          timestamp: Date.now(),
+        },
+      ]);
+      setMessage("");
+    } catch (err) {
+      console.error("Error sending DM:", err);
+      alert("Failed to send direct message. " + err.message);
+    }
+  };
+
+  const handleSend = () => {
+    if (currentChat.type === "room") {
+      sendRoomMessage();
+    } else {
+      sendDirectMessage(currentChat.target);
+    }
+  };
+
+  const filteredMessages = messages.filter((m) => {
+    if (currentChat.type === "room") {
+      return m.type === "room";
+    } else {
+      return (
+        m.type === "dm" &&
+        (m.sender === currentChat.target || m.target === currentChat.target)
+      );
+    }
+  });
+
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [filteredMessages]);
 
   const handleEmojiClick = (emojiData) => {
     setMessage((prev) => prev + emojiData.emoji);
@@ -96,55 +235,106 @@ export default function ChatRoom({ username, passphrase }) {
 
   return (
     <div className="flex flex-col flex-1 bg-gray-50 relative">
-      {/* Chat Messages */}
+      {/* Chat Header - ENHANCED TYPOGRAPHY */}
+      <div className="bg-white border-b p-4 flex items-center justify-between shadow-sm">
+        <div className="flex items-center gap-3">
+          {currentChat.type === "room" ? (
+            <>
+              <div className="bg-blue-100 p-2 rounded-lg">
+                <Hash className="text-blue-600" size={22} />
+              </div>
+              <div>
+                <h2 className="font-bold text-xl tracking-tight text-gray-900">{currentChat.target}</h2>
+                <p className="text-xs text-gray-500 font-medium">Group Chat • AES Encrypted</p>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="bg-green-100 p-2 rounded-lg">
+                <MessageCircle className="text-green-600" size={22} />
+              </div>
+              <div>
+                <h2 className="font-bold text-xl tracking-tight text-gray-900">{currentChat.target}</h2>
+                <p className="text-xs text-gray-500 font-medium">Direct Message • End-to-End Encrypted</p>
+              </div>
+            </>
+          )}
+        </div>
+        {currentChat.type === "dm" && (
+          <button
+            onClick={() => onChatChange({ type: "room", target: "general" })}
+            className="text-sm font-semibold bg-blue-100 text-blue-700 px-4 py-2 rounded-lg hover:bg-blue-200 transition-colors"
+          >
+            ← Back to Room
+          </button>
+        )}
+      </div>
+
+      {/* Messages Area */}
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
-        {messages.map((m, i) => (
+        {filteredMessages.length === 0 && (
+          <div className="text-center text-gray-400 mt-10">
+            <p className="text-lg font-medium">
+              {currentChat.type === "room"
+                ? "No messages yet. Start the conversation!"
+                : `Start a private conversation with ${currentChat.target}`}
+            </p>
+          </div>
+        )}
+        {filteredMessages.map((m, i) => (
           <MessageBubble key={i} message={m} />
         ))}
-        {typingUsers.length > 0 && <TypingIndicator users={typingUsers} />}
+        {typingUsers.length > 0 && currentChat.type === "room" && (
+          <TypingIndicator users={typingUsers} />
+        )}
         <div ref={chatEndRef} />
       </div>
 
-      {/* Chat Input Area */}
+      {/* Input Area - ENHANCED TYPOGRAPHY */}
       <div className="flex p-4 border-t bg-white items-center space-x-2 relative">
-        {/* Emoji Button */}
         <button
           onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-          className="text-2xl text-gray-500 hover:text-gray-700"
+          className="text-gray-500 hover:text-gray-700 transition-colors p-2 hover:bg-gray-100 rounded-lg"
+          title="Add emoji"
         >
-          <Smile />
+          <Smile size={22} />
         </button>
 
-        {/* Emoji Picker */}
         {showEmojiPicker && (
-          <div className="absolute bottom-16 left-4 z-50 shadow-lg">
+          <div className="absolute bottom-16 left-4 z-50 shadow-2xl rounded-lg">
             <EmojiPicker onEmojiClick={handleEmojiClick} />
           </div>
         )}
 
-        {/* Message Input */}
         <input
-          className="flex-1 border rounded-md p-2 focus:outline-none focus:ring-2 focus:ring-blue-400"
+          className="flex-1 border border-gray-300 rounded-lg p-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all placeholder:text-gray-400"
           value={message}
-          placeholder="Type a message..."
+          placeholder={
+            currentChat.type === "room"
+              ? "Type a message to the room..."
+              : `Message ${currentChat.target}...`
+          }
           onChange={(e) => {
             setMessage(e.target.value);
-            socketClient.typing("general");
-            clearTimeout(window.typingTimeout);
-            window.typingTimeout = setTimeout(
-              () => socketClient.stopTyping("general"),
-              1000
-            );
+            if (currentChat.type === "room") {
+              socketClient.typing("general");
+              clearTimeout(window.typingTimeout);
+              window.typingTimeout = setTimeout(
+                () => socketClient.stopTyping("general"),
+                1000
+              );
+            }
           }}
-          onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+          onKeyDown={(e) => e.key === "Enter" && handleSend()}
         />
 
-        {/* Send Button */}
         <button
-          onClick={sendMessage}
-          className="bg-blue-600 hover:bg-blue-700 text-white rounded-md px-4 py-2"
+          onClick={handleSend}
+          disabled={!message.trim()}
+          className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white rounded-lg px-5 py-3 transition-all shadow-md hover:shadow-lg disabled:shadow-none"
+          title="Send message"
         >
-          <SendHorizonal />
+          <SendHorizonal size={20} />
         </button>
       </div>
     </div>

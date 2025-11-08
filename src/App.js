@@ -1,15 +1,18 @@
-// client/src/App.js
 import React, { useState, useEffect } from "react";
 import ChatRoom from "./components/ChatRoom";
 import Sidebar from "./components/Sidebar";
 import Login from "./components/Login";
 import Register from "./components/Register";
+import LandingPage from "./components/LandingPage";
+import { ToastContainer } from "react-toastify";
+import "react-toastify/dist/ReactToastify.css";
+
 
 export default function App() {
   const [user, setUser] = useState(null);
-  const [page, setPage] = useState("login"); // login | register | chat
+  const [page, setPage] = useState("landing");
+  const [currentChat, setCurrentChat] = useState({ type: "room", target: "general" });
 
-  // Check for existing session on mount
   useEffect(() => {
     const token = localStorage.getItem("token");
     const username = localStorage.getItem("username");
@@ -20,59 +23,87 @@ export default function App() {
     }
   }, []);
 
-  // Handle successful registration - Login and Register components handle their own API calls
   const handleRegister = (username) => {
     console.log("✅ Registration complete for:", username);
-    // After registration, user credentials are already in localStorage
     setUser({ username });
     setPage("chat");
   };
 
-  // Handle successful login - Login component handles its own API call
   const handleLogin = (username) => {
     console.log("✅ Login complete for:", username);
-    // After login, user credentials are already in localStorage
     setUser({ username });
     setPage("chat");
   };
 
-  // Handle logout
   const handleLogout = () => {
     console.log("🚪 Logging out:", user?.username);
-    localStorage.removeItem("token");
-    localStorage.removeItem("username");
-    localStorage.removeItem("email");
-    localStorage.removeItem("privateKey");
-    localStorage.removeItem("publicKey");
+    localStorage.clear();
     setUser(null);
-    setPage("login");
+    setPage("landing");
+    setCurrentChat({ type: "room", target: "general" });
   };
 
-  // Render pages
+  const handleChatChange = (chat) => {
+    console.log("💬 Switching to:", chat);
+    setCurrentChat(chat);
+  };
+
+  if (page === "landing") {
+    return (
+      <>
+        <LandingPage
+          onLogin={() => setPage("login")}
+          onRegister={() => setPage("register")}
+        />
+        <ToastContainer position="top-right" autoClose={2500} theme="colored" />
+      </>
+    );
+  }
+
   if (page === "register") {
     return (
-      <Register 
-        onRegister={handleRegister} 
-        onSwitch={() => setPage("login")} 
-      />
+      <>
+        <Register
+          onRegister={handleRegister}
+          onSwitch={() => setPage("login")}
+          onBack={() => setPage("landing")}
+        />
+        <ToastContainer position="top-right" autoClose={2500} theme="colored" />
+      </>
     );
   }
 
   if (page === "login") {
     return (
-      <Login 
-        onLogin={handleLogin} 
-        onSwitch={() => setPage("register")} 
-      />
+      <>
+        <Login
+          onLogin={handleLogin}
+          onSwitch={() => setPage("register")}
+          onBack={() => setPage("landing")}
+        />
+        <ToastContainer position="top-right" autoClose={2500} theme="colored" />
+      </>
     );
   }
 
   if (page === "chat" && user) {
     return (
-      <div className="flex h-screen">
-        <Sidebar username={user.username} onLogout={handleLogout} />
-        <ChatRoom username={user.username} />
-      </div>
+      <>
+        <div className="flex h-screen bg-gray-100">
+          <Sidebar
+            username={user.username}
+            onLogout={handleLogout}
+            currentChat={currentChat}
+            onChatChange={handleChatChange}
+          />
+          <ChatRoom
+            username={user.username}
+            currentChat={currentChat}
+            onChatChange={handleChatChange}
+          />
+        </div>
+        <ToastContainer position="top-right" autoClose={2500} theme="colored" />
+      </>
     );
   }
 
