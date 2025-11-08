@@ -1,6 +1,11 @@
 import React, { useState, useEffect, useRef } from "react";
 import socketClient from "../socketClient";
-import { deriveKey, encryptMessage, decryptMessage, generateSalt } from "../cryptoUtils";
+import {
+  deriveKey,
+  encryptMessage,
+  decryptMessage,
+} from "../utils/cryptoUtils.js";
+// RSA utilities not needed in current implementation (using shared AES key)
 import TypingIndicator from "./TypingIndicator";
 import MessageBubble from "./MessageBubble";
 import { SendHorizonal, Smile } from "lucide-react";
@@ -9,64 +14,87 @@ import EmojiPicker from "emoji-picker-react";
 export default function ChatRoom({ username, passphrase }) {
   const [messages, setMessages] = useState([]);
   const [message, setMessage] = useState("");
-  const [key, setKey] = useState(null);
+  const [aesKey, setAesKey] = useState(null);
   const [typingUsers, setTypingUsers] = useState([]);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const chatEndRef = useRef();
 
+  // --- Load RSA private key and derive AES key ---
   useEffect(() => {
     (async () => {
-      //const derived = await deriveKey(passphrase, generateSalt(16));
-      const fixedSalt = "fixed_salt_for_demo"; // In production, use a proper salt management strategy
-      const derived = await deriveKey(passphrase, fixedSalt);
-      setKey(derived);
-      socketClient.join(username);
-      socketClient.onMessage(async (data) => {
-        if (data.sender === username) return;
-  try {
-    const text = await decryptMessage(data, derived);
+      try {
+        // 1️⃣ Derive AES key from passphrase
+        const fixedSalt = "fixed_salt_for_demo"; // Replace with secure salt in production
+        const derived = await deriveKey(passphrase, fixedSalt);
+        setAesKey(derived);
+        console.log("✅ AES key derived successfully");
 
-    // ✅ Avoid duplicate: don't add again if the last message is same sender & text
-    setMessages((prev) => {
-      if (prev.length > 0) {
-        const last = prev[prev.length - 1];
-        if (last.sender === data.sender && last.text === text) return prev;
+        // 2️⃣ Socket join
+        socketClient.join(username);
+
+        // 3️⃣ Listen for messages
+        socketClient.onMessage(async (data) => {
+          if (data.sender === username) return;
+
+          try {
+            const text = await decryptMessage(data, derived);
+            setMessages((prev) => {
+              if (prev.length > 0) {
+                const last = prev[prev.length - 1];
+                if (last.sender === data.sender && last.text === text) return prev;
+              }
+              return [...prev, { sender: data.sender, text }];
+            });
+          } catch (err) {
+            console.error("Decryption failed:", err);
+          }
+        });
+
+        // 4️⃣ Listen for typing events
+        socketClient.onTyping((user) =>
+          setTypingUsers((prev) => [...new Set([...prev, user])])
+        );
+        socketClient.onStopTyping((user) =>
+          setTypingUsers((prev) => prev.filter((u) => u !== user))
+        );
+      } catch (err) {
+        console.error("❌ Error in ChatRoom initialization:", err);
+        alert("Failed to initialize chat. Please try logging in again.");
       }
-      return [...prev, { sender: data.sender, text }];
-    });
-  } catch (err) {
-    console.error("Decryption failed:", err);
-  }
-});
-      socketClient.onTyping((user) =>
-        setTypingUsers((prev) => [...new Set([...prev, user])])
-      );
-      socketClient.onStopTyping((user) =>
-        setTypingUsers((prev) => prev.filter((u) => u !== user))
-      );
     })();
-  }, [passphrase]);
+  }, [passphrase, username]);
 
+  // --- Send message with AES encryption ---
   const sendMessage = async () => {
-    if (!message.trim() || !key) return;
-    const enc = await encryptMessage(message, key);
-    socketClient.sendMessage({
-      room: "general",
-      sender: username,
-      ciphertext: enc.ciphertext,
-      iv: enc.iv,
-    });
-    setMessages((prev) => [...prev, { sender: "You", text: message }]);
-    setMessage("");
+    if (!message.trim() || !aesKey) return;
+
+    try {
+      const enc = await encryptMessage(message, aesKey);
+      socketClient.sendMessage({
+        room: "general",
+        sender: username,
+        ciphertext: enc.ciphertext,
+        iv: enc.iv,
+      });
+
+      setMessages((prev) => [...prev, { sender: "You", text: message }]);
+      setMessage("");
+    } catch (err) {
+      console.error("Error sending message:", err);
+      alert("Failed to send message");
+    }
   };
 
+  // --- Auto scroll to bottom ---
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
   const handleEmojiClick = (emojiData) => {
     setMessage((prev) => prev + emojiData.emoji);
   };
-   return (
+
+  return (
     <div className="flex flex-col flex-1 bg-gray-50 relative">
       {/* Chat Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-3">

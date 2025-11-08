@@ -1,11 +1,31 @@
 import React, { useState, useEffect } from "react";
 import socketClient from "../socketClient";
+import { importPrivateKey ,importPublicKey} from "../utils/rsaUtils"; // ✅ Use rsaUtils for RSA keys, NOT cryptoUtils
 
 export default function Sidebar({ username, onLogout }) {
   const [users, setUsers] = useState([]);
+  const [privateKey, setPrivateKey] = useState(null);
 
   useEffect(() => {
-    // ✅ Listen for user list updates from the server
+    // Load the user's RSA private key from localStorage when the Sidebar component is mounted
+    const loadPrivateKey = async () => {
+      try {
+        const privateKeyBase64 = localStorage.getItem("privateKey");
+        if (privateKeyBase64) {
+          // ✅ FIXED: Use importPrivateKey from rsaUtils for RSA keys
+          const key = await importPrivateKey(privateKeyBase64);
+          setPrivateKey(key);
+          console.log("✅ RSA private key loaded successfully");
+        } else {
+          console.warn("⚠️ Private key missing in localStorage.");
+        }
+      } catch (err) {
+        console.error("❌ Error loading private key:", err);
+      }
+    };
+    loadPrivateKey();
+
+    // Listen for user list updates from the server
     socketClient.onUserList((userList) => {
       setUsers(userList);
     });
@@ -14,7 +34,7 @@ export default function Sidebar({ username, onLogout }) {
     return () => socketClient.offUserList();
   }, []);
 
-  // ✅ Filter out the current user
+  // Filter out the current user
   const otherUsers = users.filter((user) => user !== username);
 
   return (
@@ -27,10 +47,18 @@ export default function Sidebar({ username, onLogout }) {
         Connected as: <span className="font-semibold text-blue-300">{username}</span>
       </p>
 
+      {/* Private Key Status Indicator (Optional) */}
+      <div className="mb-4 p-2 rounded-lg bg-gray-800 text-xs">
+        <span className="text-gray-400">Encryption: </span>
+        <span className={privateKey ? "text-green-400" : "text-red-400"}>
+          {privateKey ? "✅ Active" : "❌ Not Loaded"}
+        </span>
+      </div>
+
       {/* Online Users */}
       <div className="flex-1 overflow-y-auto mb-6">
         <h3 className="text-lg font-semibold mb-3 border-b border-gray-700 pb-2 text-blue-400">
-          Online Users
+          Online Users ({otherUsers.length})
         </h3>
         {otherUsers.length === 0 ? (
           <p className="text-gray-500 text-sm italic">No other users online</p>
