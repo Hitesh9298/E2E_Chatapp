@@ -1,37 +1,41 @@
-// client/src/socketClient.js
 import { io } from "socket.io-client";
 
 const socket = io("http://localhost:5000");
 
 const socketClient = {
-  // Join chat
+  socket,
+
   join: (username) => {
     socket.emit("join", username);
   },
 
-  // Send room message
+  joinRoom: (roomName) => {
+    socket.emit("joinRoom", roomName);
+  },
+
+  leaveRoom: (roomName) => {
+    socket.emit("leaveRoom", roomName);
+  },
+
   sendMessage: (data) => {
     socket.emit("message", data);
   },
 
-  // Send direct message
   sendDirectMessage: (data) => {
     socket.emit("directMessage", data);
   },
 
-  // FIXED: Remove old listener before adding new one
   onMessage: (callback) => {
-    socket.off("message"); // Remove all previous listeners
+    socket.off("message");
     socket.on("message", callback);
   },
 
-  // FIXED: Remove old listener before adding new one
   onDirectMessage: (callback) => {
-    socket.off("directMessage"); // Remove all previous listeners
+    socket.off("directMessage");
     socket.on("directMessage", callback);
   },
 
-  // Typing indicators
+  // Room typing indicators
   typing: (room) => {
     socket.emit("typing", room);
   },
@@ -40,19 +44,38 @@ const socketClient = {
     socket.emit("stopTyping", room);
   },
 
+  // DM typing indicators (NEW)
+  typingDM: (targetUser) => {
+    socket.emit("typingDM", targetUser);
+  },
+
+  stopTypingDM: (targetUser) => {
+    socket.emit("stopTypingDM", targetUser);
+  },
+
   onTyping: (callback) => {
-    socket.off("typing"); // Remove previous listeners
+    socket.off("typing");
     socket.on("typing", callback);
   },
 
   onStopTyping: (callback) => {
-    socket.off("stopTyping"); // Remove previous listeners
+    socket.off("stopTyping");
     socket.on("stopTyping", callback);
   },
 
-  // User list
+  // DM typing listeners (NEW)
+  onTypingDM: (callback) => {
+    socket.off("typingDM");
+    socket.on("typingDM", callback);
+  },
+
+  onStopTypingDM: (callback) => {
+    socket.off("stopTypingDM");
+    socket.on("stopTypingDM", callback);
+  },
+
   onUserList: (callback) => {
-    socket.off("userList"); // Remove previous listeners
+    socket.off("userList");
     socket.on("userList", callback);
   },
 
@@ -60,33 +83,40 @@ const socketClient = {
     socket.off("userList");
   },
 
-  // NEW: Cleanup methods for specific handlers
-  removeMessageListener: (callback) => {
-    socket.off("message", callback);
+  onRoomCreated: (callback) => {
+    socket.off("roomCreated");
+    socket.on("roomCreated", callback);
   },
 
-  removeDirectMessageListener: (callback) => {
-    socket.off("directMessage", callback);
+  onRoomDeleted: (callback) => {
+    socket.off("roomDeleted");
+    socket.on("roomDeleted", callback);
   },
 
-  removeTypingListener: (callback) => {
-    socket.off("typing", callback);
+  onUserJoinedRoom: (callback) => {
+    socket.off("userJoinedRoom");
+    socket.on("userJoinedRoom", callback);
   },
 
-  removeStopTypingListener: (callback) => {
-    socket.off("stopTyping", callback);
+  onUserLeftRoom: (callback) => {
+    socket.off("userLeftRoom");
+    socket.on("userLeftRoom", callback);
   },
 
-  // NEW: Remove all listeners (use on unmount)
   removeAllListeners: () => {
     socket.off("message");
     socket.off("directMessage");
     socket.off("typing");
     socket.off("stopTyping");
+    socket.off("typingDM");
+    socket.off("stopTypingDM");
     socket.off("userList");
+    socket.off("roomCreated");
+    socket.off("roomDeleted");
+    socket.off("userJoinedRoom");
+    socket.off("userLeftRoom");
   },
 
-  // Disconnect
   disconnect: () => {
     socket.disconnect();
   },

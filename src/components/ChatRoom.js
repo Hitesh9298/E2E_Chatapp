@@ -55,14 +55,34 @@ export default function ChatRoom({ username, currentChat, onChatChange }) {
 
         const handleRoomMessage = async (data) => {
           if (!isMounted) return;
-          if (data.sender === username) return;
+          // REMOVED: if (data.sender === username) return;
+          // Now we receive our own messages from the server
 
           try {
             const text = await decryptMessage(data, derived);
-            setMessages((prev) => [
-              ...prev,
-              { sender: data.sender, text, type: "room", timestamp: Date.now() },
-            ]);
+            setMessages((prev) => {
+              // Check if message already exists to avoid duplicates
+              const exists = prev.some(m => 
+                m.sender === data.sender && 
+                m.text === text && 
+                m.type === "room" &&
+                m.room === (data.room || "general") &&
+                Math.abs(m.timestamp - Date.now()) < 1000
+              );
+              
+              if (exists) return prev;
+              
+              return [
+                ...prev,
+                { 
+                  sender: data.sender, 
+                  text, 
+                  type: "room", 
+                  room: data.room || "general",
+                  timestamp: Date.now() 
+                },
+              ];
+            });
           } catch (err) {
             console.error("Room decryption failed:", err);
           }
@@ -108,10 +128,22 @@ export default function ChatRoom({ username, currentChat, onChatChange }) {
           setTypingUsers((prev) => prev.filter((u) => u !== user));
         };
 
+        const handleTypingDM = (user) => {
+          if (!isMounted) return;
+          setTypingUsers((prev) => [...new Set([...prev, user])]);
+        };
+
+        const handleStopTypingDM = (user) => {
+          if (!isMounted) return;
+          setTypingUsers((prev) => prev.filter((u) => u !== user));
+        };
+
         socketClient.onMessage(handleRoomMessage);
         socketClient.onDirectMessage(handleDirectMessage);
         socketClient.onTyping(handleTyping);
         socketClient.onStopTyping(handleStopTyping);
+        socketClient.onTypingDM(handleTypingDM);
+        socketClient.onStopTypingDM(handleStopTypingDM);
       } catch (err) {
         console.error("❌ Initialization error:", err);
         alert("Failed to initialize chat");
@@ -129,22 +161,27 @@ export default function ChatRoom({ username, currentChat, onChatChange }) {
     privateKeyRef.current = privateKey;
   }, [privateKey]);
 
+  // Clear typing users when switching chats (but keep message history)
+  useEffect(() => {
+    setTypingUsers([]);
+  }, [currentChat.type, currentChat.target]);
+
   const sendRoomMessage = async () => {
     if (!message.trim() || !roomAesKey) return;
 
     try {
       const enc = await encryptMessage(message, roomAesKey);
+      const roomName = currentChat.target || "general";
+      
       socketClient.sendMessage({
-        room: "general",
+        room: roomName,
         sender: username,
         ciphertext: enc.ciphertext,
         iv: enc.iv,
       });
 
-      setMessages((prev) => [
-        ...prev,
-        { sender: "You", text: message, type: "room", timestamp: Date.now() },
-      ]);
+      // REMOVED: Don't add message locally, wait for server echo
+      // This prevents duplicate messages
       setMessage("");
     } catch (err) {
       console.error("Error sending room message:", err);
@@ -189,16 +226,30 @@ export default function ChatRoom({ username, currentChat, onChatChange }) {
         encryptedMessage,
       });
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          sender: "You",
-          text: message,
-          type: "dm",
-          target: recipientUsername,
-          timestamp: Date.now(),
-        },
-      ]);
+      // Add DM to local state immediately (DMs don't echo back from server)
+      setMessages((prev) => {
+        // Check for duplicates
+        const exists = prev.some(m => 
+          m.sender === "You" && 
+          m.text === message && 
+          m.type === "dm" &&
+          m.target === recipientUsername &&
+          Math.abs(m.timestamp - Date.now()) < 1000
+        );
+        
+        if (exists) return prev;
+        
+        return [
+          ...prev,
+          {
+            sender: "You",
+            text: message,
+            type: "dm",
+            target: recipientUsername,
+            timestamp: Date.now(),
+          },
+        ];
+      });
       setMessage("");
     } catch (err) {
       console.error("Error sending DM:", err);
@@ -216,7 +267,7 @@ export default function ChatRoom({ username, currentChat, onChatChange }) {
 
   const filteredMessages = messages.filter((m) => {
     if (currentChat.type === "room") {
-      return m.type === "room";
+      return m.type === "room" && m.room === currentChat.target;
     } else {
       return (
         m.type === "dm" &&
@@ -233,9 +284,28 @@ export default function ChatRoom({ username, currentChat, onChatChange }) {
     setMessage((prev) => prev + emojiData.emoji);
   };
 
+  const handleTyping = () => {
+    if (currentChat.type === "room") {
+      socketClient.typing(currentChat.target);
+      clearTimeout(window.typingTimeout);
+      window.typingTimeout = setTimeout(
+        () => socketClient.stopTyping(currentChat.target),
+        1000
+      );
+    } else {
+      // For DMs, send typing indicator with target user
+      socketClient.typingDM(currentChat.target);
+      clearTimeout(window.typingTimeout);
+      window.typingTimeout = setTimeout(
+        () => socketClient.stopTypingDM(currentChat.target),
+        1000
+      );
+    }
+  };
+
   return (
     <div className="flex flex-col flex-1 bg-gray-50 relative">
-      {/* Chat Header - ENHANCED TYPOGRAPHY */}
+      {/* Chat Header */}
       <div className="bg-white border-b p-4 flex items-center justify-between shadow-sm">
         <div className="flex items-center gap-3">
           {currentChat.type === "room" ? (
@@ -282,15 +352,15 @@ export default function ChatRoom({ username, currentChat, onChatChange }) {
           </div>
         )}
         {filteredMessages.map((m, i) => (
-          <MessageBubble key={i} message={m} />
+          <MessageBubble key={i} message={m} currentUsername={username} />
         ))}
-        {typingUsers.length > 0 && currentChat.type === "room" && (
+        {typingUsers.length > 0 && (
           <TypingIndicator users={typingUsers} />
         )}
         <div ref={chatEndRef} />
       </div>
 
-      {/* Input Area - ENHANCED TYPOGRAPHY */}
+      {/* Input Area */}
       <div className="flex p-4 border-t bg-white items-center space-x-2 relative">
         <button
           onClick={() => setShowEmojiPicker(!showEmojiPicker)}
@@ -316,14 +386,7 @@ export default function ChatRoom({ username, currentChat, onChatChange }) {
           }
           onChange={(e) => {
             setMessage(e.target.value);
-            if (currentChat.type === "room") {
-              socketClient.typing("general");
-              clearTimeout(window.typingTimeout);
-              window.typingTimeout = setTimeout(
-                () => socketClient.stopTyping("general"),
-                1000
-              );
-            }
+            handleTyping();
           }}
           onKeyDown={(e) => e.key === "Enter" && handleSend()}
         />
